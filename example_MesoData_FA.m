@@ -1,0 +1,197 @@
+clear all
+SET_CONSTS
+
+cvNumFolds = 10;
+q = 0:40;
+numDimsUsedForPrediction = 1:20;
+fit_thresh = 0.01;
+maxNeuTrgt = 35;
+saveFig = 0;
+maxNeuSrc = 80;
+dim_fract = 0.8;%fraction of full performance to use in estimating dimensionality of subspace
+useParallel = 0;
+dimStruct = struct;
+dataFolder = 'Z:\HarveyLab\Tier1\Sofia\Data\CommunicationSubspace\mat_sample';
+animalList = dir(dataFolder);
+% Filter out non-folders
+animalList = animalList([animalList.isdir]);  % Keep only items that are directories
+animalList = {animalList.name};  % Store the names in a cell array
+animalList = animalList(~ismember(animalList, {'.', '..'}));
+animalList = animalList(contains(animalList, 'SS'));
+sumStruct = struct;
+
+%%
+for iMouse = 1:numel(animalList)
+    dimStruct = struct;
+    thisMouse = animalList{iMouse};
+    sessionsFolder = fullfile(dataFolder,thisMouse);
+    sessionList = dir(sessionsFolder);
+    % Filter out non-folders
+    sessionList = sessionList([sessionList.isdir]);  % Keep only items that are directories
+    sessionList = {sessionList.name};  % Store the names in a cell array
+    sessionList = sessionList(~ismember(sessionList, {'.', '..'}));
+    undrscr_idx = strfind(sessionList,'_');
+    sessionUnique = {};
+    
+    for iSession = 1:numel(sessionList)
+        sessionUnique{iSession} = sessionList{iSession}(1:undrscr_idx{iSession}-1); 
+    end
+    
+    sessionUnique = unique(sessionUnique);
+    
+    for iSession = 1:numel(sessionList)
+        sessionLabel = sessionList{iSession};
+        disp(['Working on animal ' thisMouse ' and session ' sessionLabel]);
+        thisSessionPath = fullfile(sessionsFolder,sessionLabel);
+        
+        pathNameFigs = fullfile(thisSessionPath,'figs');  % Specify the folder name
+        
+        if ~exist(pathNameFigs, 'dir')
+            mkdir(pathNameFigs);
+            disp('Folder created successfully.');
+        else
+            disp('Folder already exists.');
+        end
+        
+        files = dir(fullfile(thisSessionPath, '*.mat'));
+        thisSessionData = struct;
+        % Find the index of the underscore
+        underscoreIndex = strfind(thisSessionPath, '_');
+        slashIndex = strfind(thisSessionPath, '\');
+        % Extract the two substrings for the sessions, before and after the underscore
+        sessionStr = thisSessionPath(slashIndex(end)+1:underscoreIndex(end)-1);
+        sessionTestStr = thisSessionPath(underscoreIndex(end)+1:end);
+        
+        % Loop through each file
+        for i = 1:numel(files)
+            filePath = fullfile(thisSessionPath, files(i).name);
+            tmp = load(filePath);
+            varName = fieldnames(tmp);
+            varName = varName{1};
+            thisSessionData.(varName) = tmp.(varName);
+        end
+        this_session_areas_full = fieldnames(thisSessionData);
+        this_session_areas = this_session_areas_full(~contains(this_session_areas_full,'test'));
+        
+        for iAreaSource = 1:numel(this_session_areas)
+            
+            thisSourceArea = this_session_areas{iAreaSource};
+            disp(['Working on source area ' thisSourceArea]);
+            
+            data2use = thisSessionData.(thisSourceArea);
+            
+            if size(data2use,1)>=[maxNeuTrgt+maxNeuSrc]
+                randI = randperm(size(data2use,1));
+                selectedI_source = sort(randI(1:maxNeuTrgt));
+                keepIndices = true(size(data2use,1), 1);
+                keepIndices(selectedI_source) = false;
+                iKeep = find(keepIndices==1);
+                iKeepRand = randperm(size(iKeep,1));
+                iKeepRand_source = iKeep(sort(iKeepRand(1:maxNeuSrc)));
+                
+                
+                X_source = data2use(iKeepRand_source,:)';
+                Y_target_same = data2use(selectedI_source,:)';
+                
+                for iAreaTarget = 1:numel(this_session_areas)
+                    %SELECT AGAIN THE DATA FROM THE SOURCE AREA FROM THE
+                    %FIRST DAY (because bellow we loop for the test day)
+                    thisSourceArea = this_session_areas{iAreaSource};
+                    data2use = thisSessionData.(thisSourceArea);
+                    X_source = data2use(iKeepRand_source,:)';
+                    Y_target_same = data2use(selectedI_source,:)';
+                    
+                    thisTargetArea = this_session_areas{iAreaTarget};
+                    data2use = thisSessionData.(thisTargetArea);
+                    
+                    if size(data2use,1)>=maxNeuTrgt
+                        
+                        if strcmp(thisTargetArea,thisSourceArea)==0
+                            randI = randperm(size(data2use,1));
+                            selectedI_target = sort(randI(1:maxNeuTrgt));
+                            
+                            
+                            Y_target = data2use(selectedI_target,:)';
+                            
+                        elseif strcmp(thisTargetArea,thisSourceArea)==1
+                            
+                            Y_target = Y_target_same;
+                        end
+
+
+                        %%% Cross-validate Factor Regression
+                        cvOptions = statset('crossval');
+                        % cvOptions.UseParallel = true;
+
+                        regressMethod = @FactorRegress;
+
+                        % In order to apply Factor Regression, we must first determine the optimal
+                        % dimensionality for the Factor Analysis Model
+                        p = size(X_source, 2);
+                        qOpt = FactorAnalysisModelSelect( ...
+                            CrossValFa(X_source, q, cvNumFolds, cvOptions), ...
+                            q);
+
+                        cvFun = @(Ytrain, Xtrain, Ytest, Xtest) RegressFitAndPredict...
+                            (regressMethod, Ytrain, Xtrain, Ytest, Xtest, ...
+                            numDimsUsedForPrediction, ...
+                            'LossMeasure', 'NSE', 'qOpt', qOpt);
+                        % qOpt is an extra argument for FactorRegress. Extra arguments for the
+                        % regression function are passed as name/value pairs after the
+                        % cross-validation parameter (in this case numDimsUsedForPrediction).
+                        % qOpt, the optimal factor analysis dimensionality for the source activity
+                        % X, must be provided when cross-validating Factor Regression. When
+                        % absent, Factor Regression will automatically determine qOpt via 
+                        % cross-validation (which will generate an error if Factor Regression is
+                        % itself used within a cross-validation procedure).
+
+                        cvl = crossval(cvFun, Y_target, X_source, ...
+                              'KFold', cvNumFolds, ...
+                            'Options', cvOptions);
+
+                        cvLoss = ...
+                            [ mean(cvl); std(cvl)/sqrt(cvNumFolds) ];
+
+                        optDimFactorRegress = ModelSelect...
+                            (cvLoss, numDimsUsedForPrediction);
+
+                        % Plot Reduced Rank Regression cross-validation results
+                        x = numDimsUsedForPrediction;
+                        x(x > qOpt) = [];
+                        y = 1-cvLoss(1,:);
+                        e = cvLoss(2,:);
+
+                        hold on
+                        errorbar(x, y, e, 'o--', 'Color', COLOR(Area2,:), ...
+                            'MarkerFaceColor', 'w', 'MarkerSize', 10)
+                        hold off
+
+
+                        legend('Reduced Rank Regression', ...
+                            'Factor Regression', ...
+                            'Location', 'SouthEast')
+
+
+                        %% Factor analysis cross-validation example +++++++++++++++++++++++++++++++
+                        % ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+                        %%
+                        cvOptions = statset('crossval');
+                        % cvOptions.UseParallel = true;
+
+                        cvLoss= CrossValFa(X_source, q, cvNumFolds, cvOptions);
+
+                        % CrossValFa returns the cumulative shared variance explained. To compute
+                        % the optimal Factor Analysis dimensionality, call
+                        % FactorAnalysisModelSelect:
+                        qOpt = FactorAnalysisModelSelect(cvLoss, q);
+                        
+                        
+                        
+                        
+                    end
+                end
+            end
+        end
+    end
+end

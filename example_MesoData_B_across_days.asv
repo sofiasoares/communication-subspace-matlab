@@ -1,4 +1,3 @@
-%%
 clear all
 SET_CONSTS
 
@@ -7,7 +6,7 @@ SET_CONSTS
 numDimsUsedForPrediction = 1:20;
 % Number of cross validation folds.
 cvNumFolds = 10;
-
+fit_thresh = 0.01;
 maxNeuTrgt = 35;
 saveFig = 0;
 maxNeuSrc = 80;
@@ -21,9 +20,12 @@ animalList = animalList([animalList.isdir]);  % Keep only items that are directo
 animalList = {animalList.name};  % Store the names in a cell array
 animalList = animalList(~ismember(animalList, {'.', '..'}));
 animalList = animalList(contains(animalList, 'SS'));
+sumStruct = struct;
+withinDayStruct = struct;
 
 %%
 for iMouse = 1:numel(animalList)
+    dimStruct = struct;
     thisMouse = animalList{iMouse};
     sessionsFolder = fullfile(dataFolder,thisMouse);
     sessionList = dir(sessionsFolder);
@@ -63,6 +65,7 @@ for iMouse = 1:numel(animalList)
             varName = varName{1};
             thisSessionData.(varName) = tmp.(varName);
         end
+        
         this_session_areas_full = fieldnames(thisSessionData);
         this_session_areas = this_session_areas_full(~contains(this_session_areas_full,'test'));
         
@@ -74,6 +77,7 @@ for iMouse = 1:numel(animalList)
             data2use = thisSessionData.(thisSourceArea);
             
             if size(data2use,1)>=[maxNeuTrgt+maxNeuSrc]
+                  
                 randI = randperm(size(data2use,1));
                 selectedI_source = sort(randI(1:maxNeuTrgt));
                 keepIndices = true(size(data2use,1), 1);
@@ -256,10 +260,33 @@ for iMouse = 1:numel(animalList)
                             dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).optDim=optDimReducedRankRegress;
                             dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).myDim = this_dim;
                             dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).fullPerf = y_full;
+                            dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).optDimPerf = y(optDimReducedRankRegress);
                             dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).B = B;
                             dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).B_ = B_;
                             dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).V = V;
+                            dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).X_source = X_source;
+                            dimStruct.(thisMouse).(sessionField).(thisSourceArea).(thisTargetArea).Y_target = Y_target;
+                            
+                            if iTest==1
+                                sessionFieldWithinDay = ['Date_' strrep(sessionStr, '-', '_')];
+                                withinDayStruct.(thisMouse).(thisSourceArea).(thisTargetArea).(sessionFieldWithinDay).optDimPerf = y(optDimReducedRankRegress);
+                                withinDayStruct.(thisMouse).(thisSourceArea).(thisTargetArea).(sessionFieldWithinDay).optDim = optDimReducedRankRegress;
+                            elseif iTest==2
+                                sessionFieldWithinDay = ['Date_' strrep(sessionTestStr, '-', '_')];
+                                undrscr_source = strfind(thisSourceArea, '_test');
+                                undrscr_target = strfind(thisTargetArea, '_test');
+                                withinDayStruct.(thisMouse).(thisSourceArea(1:undrscr_source)).(thisTargetArea).(sessionFieldWithinDay).optDimPerf = y(optDimReducedRankRegress);
+                                withinDayStruct.(thisMouse).(thisSourceArea).(thisTargetArea).(sessionFieldWithinDay).optDim = optDimReducedRankRegress;
+
+                            end
                         end
+                        
+                        %                         test_y = dimStruct.(thisMouse).(sessionField).RSPp_test.RSPp_test.Y_target;
+                        %                         test_x = dimStruct.(thisMouse).(sessionField).RSPp_test.RSPp_test.X_source;
+                        %                         test_B = dimStruct.(thisMouse).(sessionField).RSPp.RSPp.B;
+                        %
+                        %                         [loss, Yhat] = RegressPredict(test_y, test_x, test_B, 'LossMeasure', 'NSE');
+                        %                         1-loss
                     end
                 end
             end
@@ -267,256 +294,243 @@ for iMouse = 1:numel(animalList)
         end
         close all
     end
+    sessionList = fieldnames(dimStruct.(thisMouse));
+    disp(['Now start testing model performance on other sessions'])
+    
+    for iSessionPair = 1:numel(sessionList)
+        
+        thisSessionPair = sessionList{iSessionPair};
+        
+        thisSessionAreasFull = fieldnames(dimStruct.(thisMouse).(thisSessionPair));
+        thisSessionAreasSource = thisSessionAreasFull(~contains(thisSessionAreasFull,'test'));
+        
+        for iAreaSource = 1:numel(thisSessionAreasSource)
+            
+            thisSource = thisSessionAreasSource{iAreaSource};
+            
+            thisSessionAreasTarget = fieldnames(dimStruct.(thisMouse).(thisSessionPair).(thisSource));
+            
+            for iAreaTarget = 1:numel(thisSessionAreasTarget)
+                
+                thisTarget = thisSessionAreasTarget{iAreaTarget};
+                
+                dataDay1 = dimStruct.(thisMouse).(thisSessionPair).(thisSource).(thisTarget);
+                dataDay2 = dimStruct.(thisMouse).(thisSessionPair).([thisSource '_test']).([thisTarget '_test']);
+                
+                [loss1, ~] = RegressPredict(dataDay1.Y_target, dataDay1.X_source, dataDay2.B, 'LossMeasure', 'NSE');
+                [loss2, ~] = RegressPredict(dataDay2.Y_target, dataDay2.X_source, dataDay1.B, 'LossMeasure', 'NSE');
+                
+                perf1 = (1-loss1);
+                perf2 = (1-loss2);
+                fract_perf1 = perf1/dataDay1.optDimPerf;
+                fract_perf2 = perf2/dataDay2.optDimPerf;
+                
+                
+                if ~isfield(sumStruct,thisSource)
+                    sumStruct.(thisSource).(thisTarget).fracPerf = [];
+                    sumStruct.(thisSource).(thisTarget).dday = [];
+                    sumStruct.(thisSource).(thisTarget).optDim = [];
+                    sumStruct.(thisSource).(thisTarget).avgPerf = [];
+                    sumStruct.(thisSource).(thisTarget).avgWithinDayPerf = [];
+                    
+                elseif ~isfield(sumStruct.(thisSource),thisTarget)
+                    sumStruct.(thisSource).(thisTarget).fracPerf = [];
+                    sumStruct.(thisSource).(thisTarget).dday = [];
+                    sumStruct.(thisSource).(thisTarget).optDim = [];
+                    sumStruct.(thisSource).(thisTarget).avgPerf = [];
+                    sumStruct.(thisSource).(thisTarget).avgWithinDayPerf = [];
+                end
+                
+                
+                undrscIdx = strfind(thisSessionPair, '_');
+                Date1 = thisSessionPair(undrscIdx(1)+1:undrscIdx(2)-1);
+                Date2 = thisSessionPair(undrscIdx(2)+1:end);
+                ddays = days(datetime(Date2, 'InputFormat', 'yyyyMMdd')-datetime(Date1, 'InputFormat', 'yyyyMMdd'));
+                
+                if dataDay1.optDimPerf>=fit_thresh && dataDay2.optDimPerf>=fit_thresh
+                    
+                    perf1(perf1<0) = 0;
+                    perf2(perf2<0) = 0;
+                    perf1(perf1>1) = 1;
+                    perf2(perf2>1) = 1;
+                    fract_perf1(fract_perf1<0) = 0;
+                    fract_perf2(fract_perf2<0) = 0;
+                    fract_perf1(fract_perf1>1) = 1;
+                    fract_perf2(fract_perf2>1) = 1;
+                    
+                    sumStruct.(thisSource).(thisTarget).fracPerf = [sumStruct.(thisSource).(thisTarget).fracPerf mean([fract_perf1 fract_perf2])];
+                    sumStruct.(thisSource).(thisTarget).dday = [sumStruct.(thisSource).(thisTarget).dday ddays];
+                    sumStruct.(thisSource).(thisTarget).avgPerf = [sumStruct.(thisSource).(thisTarget).avgPerf mean([perf1 perf2])];
+                    sumStruct.(thisSource).(thisTarget).optDim = [sumStruct.(thisSource).(thisTarget).optDim [dataDay1.optDim; dataDay2.optDim]];
+                    sumStruct.(thisSource).(thisTarget).avgWithinDayPerf = [sumStruct.(thisSource).(thisTarget).avgWithinDayPerf mean([dataDay1.optDimPerf dataDay2.optDimPerf])];
+
+                end
+                
+                
+            end
+        end
+    end
+    
 end
 
 %%
-save(fullfile(dataFolder,'data_struct_80.mat'), 'dimStruct');
-
-%% Plot single session examples
-areaSource = 'PPC';
-areaTarget = 'V1';
-thisMouse = 'SS33';
-sessionField = 'Dates_20191104_20191106' %'Dates_20200224_20200303';
-dim1 = dimStruct.(thisMouse).(sessionField).(areaSource).(areaTarget).optDim;
-dim2 = dimStruct.(thisMouse).(sessionField).([areaSource '_test']).([areaTarget '_test']).optDim;
-B1 = dimStruct.(thisMouse).(sessionField).(areaSource).(areaTarget).B;
-B2 = dimStruct.(thisMouse).(sessionField).([areaSource '_test']).([areaTarget '_test']).B;
-subspace1 = dimStruct.(thisMouse).(sessionField).(areaSource).(areaTarget).B_(:,1:dim1);
-subspace2 = dimStruct.(thisMouse).(sessionField).([areaSource '_test']).([areaTarget '_test']).B_(:,1:dim2);
-theta = rad2deg(subspace(subspace1,subspace2))
-undrscIdx = strfind(sessionField, '_');
-Date1 = sessionField(undrscIdx(1)+1:undrscIdx(2)-1);
-Date2 = sessionField(undrscIdx(2)+1:end);
-
-
-figure;
-subplot(2,2,1)
-imagesc(B1)
-xlabel(areaTarget)
-ylabel(areaSource)
-title(['Weight matrix on date ' Date1])
-
-subplot(2,2,2)
-imagesc(B2)
-xlabel(areaTarget)
-ylabel(areaSource)
-title(['Weight matrix on date ' Date2])
-
-
-subplot(2,2,3)
-hold on
-plot([0 1],[0 1],'--k');
-plot(B1(:),B2(:),'.');
-axis tight
-xlabel(['B on day ' Date1])
-ylabel(['B on day ' Date2])
-title(['Correlation across days is ' num2str(corr(B1(:),B2(:)))])
-
-%% Summarize correlations between B weights
-sumStruct = struct;
-mouseNames = fieldnames(dimStruct);
-
-for iMouse = 1:numel(mouseNames)
-    thisMouse = mouseNames{iMouse};
-    sessionNames = fieldnames(dimStruct.(thisMouse));
-    
-    for iSession = 1:numel(sessionNames)
-        thisSession = sessionNames{iSession};
-        sourceAreasFull = fieldnames(dimStruct.(thisMouse).(thisSession));
-        sourceAreas = sourceAreasFull(~contains(sourceAreasFull,'test'));
-        
-        for iSource = 1:numel(sourceAreas)
-            thisSource = sourceAreas{iSource};
-            targetAreasFull = fieldnames(dimStruct.(thisMouse).(thisSession).(thisSource));
-            targetAreas = targetAreasFull(~contains(targetAreasFull,'test'));
-            
-            for iTarget = 1:numel(targetAreas)
-                thisTarget = targetAreas{iTarget};
-                if ~isfield(sumStruct,thisSource)
-                    sumStruct.(thisSource).(thisTarget).corrB = [];
-                    sumStruct.(thisSource).(thisTarget).dday = [];
-                    sumStruct.(thisSource).(thisTarget).theta = [];
-                elseif ~isfield(sumStruct.(thisSource),thisTarget)
-                    sumStruct.(thisSource).(thisTarget).corrB = [];
-                    sumStruct.(thisSource).(thisTarget).dday = [];
-                    sumStruct.(thisSource).(thisTarget).theta = [];
-                end
-                
-                dim1 = dimStruct.(thisMouse).(thisSession).(thisSource).(thisTarget).optDim;
-                dim2 = dimStruct.(thisMouse).(thisSession).([thisSource '_test']).([thisTarget '_test']).optDim;
-                B1 = dimStruct.(thisMouse).(thisSession).(thisSource).(thisTarget).B;
-                B2 = dimStruct.(thisMouse).(thisSession).([thisSource '_test']).([thisTarget '_test']).B;
-                subspace1 = dimStruct.(thisMouse).(thisSession).(thisSource).(thisTarget).B_(:,1:dim1);
-                subspace2 = dimStruct.(thisMouse).(thisSession).([thisSource '_test']).([thisTarget '_test']).B_(:,1:dim2);
-                theta = rad2deg(subspace(subspace1,subspace2));
-                undrscIdx = strfind(thisSession, '_');
-                Date1 = thisSession(undrscIdx(1)+1:undrscIdx(2)-1);
-                Date2 = thisSession(undrscIdx(2)+1:end);
-                thisCorrB = corr(B1(:),B2(:));
-                ddays = days(datetime(Date2, 'InputFormat', 'yyyyMMdd')-datetime(Date1, 'InputFormat', 'yyyyMMdd'));
-                sumStruct.(thisSource).(thisTarget).corrB = [sumStruct.(thisSource).(thisTarget).corrB thisCorrB];
-                sumStruct.(thisSource).(thisTarget).dday = [sumStruct.(thisSource).(thisTarget).dday ddays];
-                sumStruct.(thisSource).(thisTarget).theta = [sumStruct.(thisSource).(thisTarget).theta theta];
-                
-            end
-            
-        end
-    end
-end
+save(fullfile(dataFolder,'sum_struct_drift_80.mat'), 'sumStruct', '-v7.3');
+%% Change sumStruct fields to only have RSP (combine RSP and RSPp)
 
 %% Plot summary
 
 sourceAreas = fieldnames(sumStruct);
-plotAngle = 0;
+% vars2plot = {'fracPerf','avgPerf','optDim','avgWithinDayPerf'};
+vars2plot = {'fracPerf'};
 
-for iSource=1:numel(sourceAreas)
-    
-    thisSource = sourceAreas{iSource};
-    targetAreas = fieldnames(sumStruct.(thisSource));
-    
-    for iTarget=1:numel(targetAreas)
-        figure('WindowStyle', 'docked');
-        
-        thisTarget = targetAreas{iTarget};
-        thisPairData = sumStruct.(thisSource).(thisTarget);
-        theseDdays = unique(thisPairData.dday);
-        thisCorr = nan(2,size(theseDdays,2));
-        thisTheta = nan(2,size(theseDdays,2));
-        
-        for iDday = 1:numel(theseDdays)
-            
-            thisDday = theseDdays(iDday);
-            sampleSize = nansum(thisPairData.dday==thisDday);
-            thisDataCorr = thisPairData.corrB(thisPairData.dday==thisDday);
-            thisDataTheta = thisPairData.theta(thisPairData.dday==thisDday);
-            thisCorr(1,iDday) = nanmean(thisDataCorr);
-            thisTheta(1,iDday) = nanmean(thisDataTheta);
-            
-            if sampleSize>1
-                
-                thisCorr(2,iDday) = nanstd(thisDataCorr) / sqrt(sampleSize);
-                thisTheta(2,iDday) = nanstd(thisDataTheta) / sqrt(sampleSize);
-                
-            end
-        end
-        
-        if plotAngle
-            yyaxis left
-        end
-        
-        %        plot(theseDdays,thisCorr(1,:),'.-','linewidth',2);
-        hold on
-        errorbar(theseDdays,thisCorr(1,:),thisCorr(2,:),'linewidth',2)
-        
-        xlabel('Delta days')
-        ylabel('mean corr B')
-        xlim([0.5 15])
-        ylim([0 1])
-        
-        if plotAngle
-            yyaxis right
-            plot(theseDdays,thisTheta(1,:),'.-','linewidth',2);
-            hold on
-            errorbar(theseDdays,thisTheta(1,:),thisTheta(2,:),'linewidth',2)
-            ylabel('mean subspace angle')
-        end
-        box off
-        set(gca, 'TickDir', 'out');
-        title(['B corr for source ' thisSource ' and target ' thisTarget])
-        axis square
-        
-    end
-end
-%%
-areasList = {'V1','RSPp','RSP','PPC','M2','S1','M1'};
-animalsList = fieldnames(dimStruct);
 
-deltaStruct = struct;
-
-for iAnimal = 1:numel(animalsList)
-    thisMouse = animalsList{iAnimal};
-    sessionList = fieldnames(dimStruct.(thisMouse));
+for iVar = 1:numel(vars2plot)
     
-    for iSession = 1:numel(sessionList)
-        thisSession = sessionList{iSession};
+    thisVar = vars2plot{iVar};
+    
+    for iSource=1:numel(sourceAreas)
         
-        theseSources = fieldnames(dimStruct.(thisMouse).(thisSession));
+        thisSource = sourceAreas{iSource};
+        targetAreas = fieldnames(sumStruct.(thisSource));
         
-        for iAreaSource = 1:numel(theseSources)
-            thisSourceArea = theseSources{iAreaSource};
-            theseTargets = fieldnames(dimStruct.(thisMouse).(thisSession).(thisSourceArea));
+        for iTarget=1:numel(targetAreas)
+            figure('WindowStyle', 'docked');
             
-            for iAreaTarget = 1:numel(theseTargets)
-                thisTargetArea = theseTargets{iAreaTarget};
+            thisTarget = targetAreas{iTarget};
+            thisPairData = sumStruct.(thisSource).(thisTarget);
+            theseDdays = unique(thisPairData.dday);
+            thisBPerf = nan(2,size(theseDdays,2));
+            thisTheta = nan(2,size(theseDdays,2));
+            
+            for iDday = 1:numel(theseDdays)
                 
-                if sum(ismember(theseTargets,thisSourceArea))
-                    thisSourceAreaDim = dimStruct.(thisMouse).(thisSession).(thisSourceArea).(thisSourceArea).optDim;
-                    
-                    if strcmp(thisSourceArea,thisTargetArea)==0
-                        thisSubspaceDim = dimStruct.(thisMouse).(thisSession).(thisSourceArea).(thisTargetArea).optDim;
-                        thisSubspacePred = dimStruct.(thisMouse).(thisSession).(thisSourceArea).(thisTargetArea).fullPerf;
-                        
-                        if thisSubspacePred>=0.01
-                            thisDelta = thisSourceAreaDim - thisSubspaceDim;
-                            if isfield(deltaStruct,thisSourceArea)
-                                
-                                deltaStruct.(thisSourceArea) = [deltaStruct.(thisSourceArea),thisDelta];
-                            else
-                                
-                                deltaStruct.(thisSourceArea) = thisDelta;
-                                
-                            end
-                            
-                        end
-                    end
+                thisDday = theseDdays(iDday);
+                sampleSize = nansum(thisPairData.dday==thisDday);
+                
+                if iVar==3
+                    thisDataBPerf = thisPairData.(thisVar)(:,thisPairData.dday==thisDday);
+                    thisDataBPerf = thisDataBPerf(:);
+                    sampleSize = size(thisDataBPerf,1);
+%                     thisDataBPerf = thisDataBPerf(2,:) - thisDataBPerf(1,:);
                 else
-                    
-                    
+                    thisDataBPerf = thisPairData.(thisVar)(thisPairData.dday==thisDday);
                 end
                 
+                thisBPerf(1,iDday) = nanmean(thisDataBPerf);
                 
+                if sampleSize>1
+                    
+                    thisBPerf(2,iDday) = nanstd(thisDataBPerf) / sqrt(sampleSize);
+                    
+                end
             end
+            
+            
+            
+            %        plot(theseDdays,thisCorr(1,:),'.-','linewidth',2);
+            hold on
+            errorbar(theseDdays,thisBPerf(1,:),thisBPerf(2,:),'linewidth',2)
+            
+            xlabel('Delta days')
+            ylabel(thisVar)
+            if iVar ==1
+                ylim([0 1])
+                
+            elseif iVar==2
+                ylim([0 0.075])
+                
+            elseif iVar==3
+                ylim([0 20])
+                
+            elseif iVar==4
+                ylim([0 0.21])    
+            end
+            xlim([0.5 20.5])
+%             
+            
+            
+            box off
+            set(gca, 'TickDir', 'out');
+            title(['Stabiity of communication subspace for source ' thisSource ' and target ' thisTarget ' using ' thisVar])
+            axis square
+            
         end
     end
 end
 
 
-%%
 
-sourceAreasList = fieldnames(deltaStruct);
-deltasAll = [];
-
-for iAreaSource=1:numel(sourceAreasList)
-    %     figure;
-    
-    thisSourceArea = sourceAreasList{iAreaSource};
-    deltasAll = [deltasAll deltaStruct.(thisSourceArea)];
-    %     hist(deltaStruct.(thisSourceArea))
-    %     title(thisSourceArea)
-end
-
-figure;
-histogram(deltasAll)
-hold on
-plot([0 0],ylim,'--k', 'linewidth',2)
-xlim([-4 14]);
-xlabel('Delta predictive dimensions')
-ylabel('Data sets')
-box off
-set(gca,'TickDir','out')
-
-
-%% IGNORE THIS TESTING
-%%
-matrixTest = randn(10, 20);
-theta_same = subspace(matrixTest,matrixTest);
-theta_diff = subspace(matrixTest,randn(10, 20)*74);
-theta_diff_dim = subspace(matrixTest,randn(10, 50));
-figure;
-plot([theta_same theta_diff theta_diff_dim])
-%%
-
-H = hadamard(8);
-A = H(:,2:4);
-B = H(:,5:8);
-theta = subspace(B,B)
+%% old code for summary
+% sumStruct = struct;
+% animalList = fieldnames(dimStruct);
+% 
+% for iMouse = 1:numel(animalList)
+%     
+%     thisMouse = animalList{iMouse};
+%     sessionList = fieldnames(dimStruct.(thisMouse));
+%     
+%     for iSessionPair = 1:numel(sessionList)
+%         
+%         thisSessionPair = sessionList{iSessionPair};
+%         
+%         thisSessionAreasFull = fieldnames(dimStruct.(thisMouse).(thisSessionPair));
+%         thisSessionAreasSource = thisSessionAreasFull(~contains(thisSessionAreasFull,'test'));
+%         
+%         for iAreaSource = 1:numel(thisSessionAreasSource)
+%             
+%             thisSource = thisSessionAreasSource{iAreaSource};
+%             
+%             thisSessionAreasTarget = fieldnames(dimStruct.(thisMouse).(thisSessionPair).(thisSource));
+%             
+%             for iAreaTarget = 1:numel(thisSessionAreasTarget)
+%                 
+%                 thisTarget = thisSessionAreasTarget{iAreaTarget};
+%                 
+%                 dataDay1 = dimStruct.(thisMouse).(thisSessionPair).(thisSource).(thisTarget);
+%                 dataDay2 = dimStruct.(thisMouse).(thisSessionPair).([thisSource '_test']).([thisTarget '_test']);
+%                 
+%                 [loss1, ~] = RegressPredict(dataDay1.Y_target, dataDay1.X_source, dataDay2.B, 'LossMeasure', 'NSE');
+%                 [loss2, ~] = RegressPredict(dataDay2.Y_target, dataDay2.X_source, dataDay1.B, 'LossMeasure', 'NSE');
+%                 
+%                 perf1 = (1-loss1);
+%                 perf2 = (1-loss2);
+%                 fract_perf1 = perf1/dataDay1.optDimPerf;
+%                 fract_perf2 = perf2/dataDay2.optDimPerf;
+%                 
+%                 
+%                 if ~isfield(sumStruct,thisSource)
+%                     sumStruct.(thisSource).(thisTarget).fracPerf = [];
+%                     sumStruct.(thisSource).(thisTarget).dday = [];
+%                 elseif ~isfield(sumStruct.(thisSource),thisTarget)
+%                     sumStruct.(thisSource).(thisTarget).fracPerf = [];
+%                     sumStruct.(thisSource).(thisTarget).dday = [];
+%                 end
+%                 
+%                 
+%                 undrscIdx = strfind(thisSessionPair, '_');
+%                 Date1 = thisSessionPair(undrscIdx(1)+1:undrscIdx(2)-1);
+%                 Date2 = thisSessionPair(undrscIdx(2)+1:end);
+%                 ddays = days(datetime(Date2, 'InputFormat', 'yyyyMMdd')-datetime(Date1, 'InputFormat', 'yyyyMMdd'));
+%                 
+%                 if dataDay1.optDimPerf>=fit_thresh && dataDay2.optDimPerf>=fit_thresh
+%                     
+%                     perf1(perf1<0) = 0;
+%                     perf2(perf2<0) = 0;
+%                     perf1(perf1>1) = 1;
+%                     perf2(perf2>1) = 1;
+%                     fract_perf1(fract_perf1<0) = 0;
+%                     fract_perf2(fract_perf2<0) = 0;
+%                     fract_perf1(fract_perf1>1) = 1;
+%                     fract_perf2(fract_perf2>1) = 1;
+%                     
+%                     sumStruct.(thisSource).(thisTarget).fracPerf = [sumStruct.(thisSource).(thisTarget).fracPerf mean([fract_perf1 fract_perf2])];
+%                     sumStruct.(thisSource).(thisTarget).dday = [sumStruct.(thisSource).(thisTarget).dday ddays];
+%                     sumStruct.(thisSource).(thisTarget).avgPerf = [sumStruct.(thisSource).(thisTarget).avgPerf mean([perf1 perf2])];
+%                     
+%                 end
+%                 
+%                 
+%             end
+%         end
+%     end
+% end
